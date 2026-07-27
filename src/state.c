@@ -62,31 +62,53 @@ static int multisig_verify(const uint8_t id32[32], const uint8_t *sigs, int sig_
     return si == m;
 }
 
+// ── bounds helpers (see the §"never narrow before validating" rule below) ────
+//
+// Every length and count in this file arrives as a wire uint64_t. Narrowing one
+// to int BEFORE validating it is the bug class that produced the remote OOB
+// read: (int)0x80000000 is negative, so `off + (int)v > len` passes, `off`
+// walks backwards, and the next byte read lands outside the buffer. The rule
+// enforced throughout sp_cert_parse()/sp_state_op_parse() is therefore:
+//
+//   * keep the invariant 0 <= off <= len at every point (sp_rvar guarantees it
+//     on success, and NEED/TAKE below preserve it);
+//   * express "are there n bytes left?" as a SUBTRACTION from the remaining
+//     count, never as an addition to off — `len - off` cannot overflow given
+//     the invariant, whereas `off + n` can;
+//   * compare a wire length against the remaining bytes as uint64_t, and only
+//     narrow to int AFTER it is known to fit.
+//
+#define REMAIN(off, len)   ((uint64_t)((len) - (off)))        // needs 0<=off<=len
+#define NEED(n)            do { if (REMAIN(off, len) < (uint64_t)(n)) return 0; } while (0)
+// v is an unvalidated wire length: bound it against the remaining bytes first.
+#define TAKE(v)            do { if ((v) > REMAIN(off, len)) return 0; } while (0)
+
 int sp_cert_parse(int cert_type, const uint8_t *c, int len, SpCert *out) {
     memset(out, 0, sizeof *out);
+    if (len < 0) return 0;                                    // establishes off<=len
     int off = 0; uint64_t v;
     if (off >= len || c[off++] != SP_CERT_VER) return 0;
     if (!sp_rvar(c, len, &off, &v) || v < 1 || v > SP_NAME_MAX) return 0;
-    out->name = c + off; out->name_len = (int)v;
-    if (off + (int)v > len) return 0; off += (int)v;
+    TAKE(v);
+    out->name = c + off; out->name_len = (int)v; off += (int)v;
     if (cert_type == SP_CERT_P2PKH) {
-        if (off + 33 > len) return 0; out->owner_key = c + off; off += 33;
+        NEED(33); out->owner_key = c + off; off += 33;
     } else if (cert_type == SP_CERT_P2SH) {
         if (!sp_rvar(c, len, &off, &v) || v < 3 || v > 520) return 0;
-        out->redeem = c + off; out->redeem_len = (int)v;
-        if (off + (int)v > len) return 0; off += (int)v;
+        TAKE(v);
+        out->redeem = c + off; out->redeem_len = (int)v; off += (int)v;
     } else return 0;
-    if (off + 33 > len) return 0; out->posting_key = c + off; off += 33;
+    NEED(33); out->posting_key = c + off; off += 33;
     if (!sp_rvar(c, len, &off, &out->scope)) return 0;
-    if (off + 4 > len) return 0; out->not_after = sp_rle32(c + off); off += 4;
+    NEED(4); out->not_after = sp_rle32(c + off); off += 4;
     sp_sha256(c, (size_t)off, out->cert_id);                  // preimage ends here
     if (cert_type == SP_CERT_P2PKH) {
-        if (off + 64 > len) return 0;
+        NEED(64);
         out->sigs = c + off; out->n_sigs = 1; off += 64;
     } else {
         if (!sp_rvar(c, len, &off, &v) || v < 1 || v > 16) return 0;
-        out->sigs = c + off; out->n_sigs = (int)v;
-        if (off + (int)v * 64 > len) return 0; off += (int)v * 64;
+        TAKE(v * 64);                                         // v<=16 => no overflow
+        out->sigs = c + off; out->n_sigs = (int)v; off += (int)v * 64;
     }
     out->type = cert_type;
     out->wire_len = off;
@@ -183,24 +205,24 @@ int sp_state_op_parse(const uint8_t *e, int len, SpStateOp *out) {
     if (out->op < SP_OP_PUT || out->op > SP_OP_CLEAR) return 0;
     int off = 2; uint64_t v;
     if (!sp_rvar(e, len, &off, &v) || v < 1 || v > SP_NAME_MAX) return 0;
-    out->name = e + off; out->name_len = (int)v;
-    if (off + (int)v > len) return 0; off += (int)v;
+    TAKE(v);
+    out->name = e + off; out->name_len = (int)v; off += (int)v;
     if (!sp_rvar(e, len, &off, &v) || v > SP_STATE_KEY_MAX) return 0;
-    out->key = v ? e + off : NULL; out->key_len = (int)v;
-    if (off + (int)v > len) return 0; off += (int)v;
-    if (off + 4 + 32 > len) return 0;
+    TAKE(v);
+    out->key = v ? e + off : NULL; out->key_len = (int)v; off += (int)v;
+    NEED(4 + 32);
     out->anchor = sp_rle32(e + off); off += 4;
     out->anchor_hash = e + off; off += 32;
-    if (!sp_rvar(e, len, &off, &v) || off + (int)v > len) return 0;
-    out->payload = v ? e + off : NULL; out->payload_len = (int)v;
-    off += (int)v;
+    if (!sp_rvar(e, len, &off, &v)) return 0;
+    TAKE(v);                                                  // BEFORE any narrowing
+    out->payload = v ? e + off : NULL; out->payload_len = (int)v; off += (int)v;
     if (off >= len) return 0;
     out->has_cert = e[off++];
     if (out->has_cert != SP_CERT_NONE) {
         if (!sp_cert_parse(out->has_cert, e + off, len - off, &out->cert)) return 0;
-        off += out->cert.wire_len;
+        off += out->cert.wire_len;                            // <= len - off by construction
     }
-    if (off + 33 + 64 != len) return 0;                       // exactly signer+sig left
+    if (REMAIN(off, len) != 33 + 64) return 0;                // exactly signer+sig left
     out->signer = e + off; off += 33;
     sp_sha256(e, (size_t)off, out->op_id);                    // preimage ends here
     out->sig = e + off; off += 64;
@@ -241,6 +263,24 @@ SpState *sp_state_open(const char *path) {
 
 void sp_state_close(SpState *s) { if (s) { sqlite3_close(s->db); free(s); } }
 
+// ── write plumbing ───────────────────────────────────────────────────────────
+// Every writer below checks sqlite3_step(). Ignoring it silently drops a write
+// that failed with SQLITE_BUSY / SQLITE_FULL / SQLITE_IOERR while the caller
+// still reports success, which is how a rejected row used to be accounted as
+// admitted. A step that does not reach SQLITE_DONE is a failed write, full stop.
+static int step_done(sqlite3_stmt *st) {
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
+// BEGIN IMMEDIATE (not deferred): take the write lock at the top of the
+// critical section so two concurrent admits serialise here, instead of both
+// reading the same sum_bytes and colliding — or deadlocking — at COMMIT.
+static int tx_begin(SpState *s)  { return sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK; }
+static int tx_commit(SpState *s) { return sqlite3_exec(s->db, "COMMIT",  NULL, NULL, NULL) == SQLITE_OK; }
+static void tx_abort(SpState *s) { sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL); }
+
 typedef struct {                                              // st_names row
     int      present;
     uint8_t  owner[20];
@@ -248,50 +288,53 @@ typedef struct {                                              // st_names row
     int64_t  sum;
 } NameMeta;
 
-static void meta_get(SpState *s, const uint8_t *name, int nlen, NameMeta *m) {
+static int meta_get(SpState *s, const uint8_t *name, int nlen, NameMeta *m) {
     memset(m, 0, sizeof *m);
     sqlite3_stmt *st;
-    sqlite3_prepare_v2(s->db, "SELECT owner,floor,sum_bytes FROM st_names WHERE name=?", -1, &st, NULL);
+    if (sqlite3_prepare_v2(s->db, "SELECT owner,floor,sum_bytes FROM st_names WHERE name=?",
+                           -1, &st, NULL) != SQLITE_OK) return 0;
     sqlite3_bind_text(st, 1, (const char *)name, nlen, SQLITE_STATIC);
-    if (sqlite3_step(st) == SQLITE_ROW) {
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
         m->present = 1;
         if (sqlite3_column_bytes(st, 0) == 20) memcpy(m->owner, sqlite3_column_blob(st, 0), 20);
         m->floor = (uint32_t)sqlite3_column_int64(st, 1);
         m->sum   = sqlite3_column_int64(st, 2);
     }
     sqlite3_finalize(st);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE;              // anything else is a db error
 }
 
-static void meta_put(SpState *s, const uint8_t *name, int nlen, const NameMeta *m,
-                     const uint8_t *clear_id, const uint8_t *clear_blob, int clear_len) {
+static int meta_put(SpState *s, const uint8_t *name, int nlen, const NameMeta *m,
+                    const uint8_t *clear_id, const uint8_t *clear_blob, int clear_len) {
     sqlite3_stmt *st;
     if (clear_blob) {
-        sqlite3_prepare_v2(s->db,
+        if (sqlite3_prepare_v2(s->db,
             "INSERT INTO st_names(name,owner,floor,sum_bytes,clear_id,clear_blob) VALUES(?,?,?,?,?,?)"
             " ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,floor=excluded.floor,"
             " sum_bytes=excluded.sum_bytes,clear_id=excluded.clear_id,clear_blob=excluded.clear_blob",
-            -1, &st, NULL);
+            -1, &st, NULL) != SQLITE_OK) return 0;
         sqlite3_bind_blob(st, 5, clear_id, 32, SQLITE_STATIC);
         sqlite3_bind_blob(st, 6, clear_blob, clear_len, SQLITE_STATIC);
     } else {
-        sqlite3_prepare_v2(s->db,
+        if (sqlite3_prepare_v2(s->db,
             "INSERT INTO st_names(name,owner,floor,sum_bytes) VALUES(?,?,?,?)"
             " ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,floor=excluded.floor,"
             " sum_bytes=excluded.sum_bytes",
-            -1, &st, NULL);
+            -1, &st, NULL) != SQLITE_OK) return 0;
     }
     sqlite3_bind_text (st, 1, (const char *)name, nlen, SQLITE_STATIC);
     sqlite3_bind_blob (st, 2, m->owner, 20, SQLITE_STATIC);
     sqlite3_bind_int64(st, 3, (int64_t)m->floor);
     sqlite3_bind_int64(st, 4, m->sum);
-    sqlite3_step(st); sqlite3_finalize(st);
+    return step_done(st);
 }
 
-static void rows_wipe(SpState *s, const uint8_t *name, int nlen) {
+static int rows_wipe(SpState *s, const uint8_t *name, int nlen) {
     sqlite3_stmt *st;
-    sqlite3_prepare_v2(s->db, "DELETE FROM st_rows WHERE name=?", -1, &st, NULL);
+    if (sqlite3_prepare_v2(s->db, "DELETE FROM st_rows WHERE name=?", -1, &st, NULL) != SQLITE_OK) return 0;
     sqlite3_bind_text(st, 1, (const char *)name, nlen, SQLITE_STATIC);
-    sqlite3_step(st); sqlite3_finalize(st);
+    return step_done(st);
 }
 
 static int fail(char *err, int errlen, const char *m) {
@@ -338,82 +381,117 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
     if (ha > 0 && memcmp(hh, p.anchor_hash, 32) != 0)
         return fail(err, errlen, "anchor hash not on our chain");
 
+    // ── CRITICAL SECTION ─────────────────────────────────────────────────────
+    // Everything from here down is one read-modify-write of st_names.sum_bytes:
+    // read the held total, decide against the budget, write rows, write the new
+    // total. sqlite serialises each STATEMENT, never a sequence — so without a
+    // transaction two writers on the same name both read S and both store
+    // S+own_delta, and one delta is lost permanently on disk. sum_bytes IS the
+    // per-name budget accumulator, so an undercount silently disables the
+    // budget. This applies to threads AND to the advertised multi-process
+    // (indexerd over WAL) deployment, which is why the fix has to be a database
+    // transaction and not a mutex.
+    //
+    // BEGIN IMMEDIATE acquires the write lock up front, so a second admit
+    // blocks here (bounded by the busy timeout set in sp_state_open) rather
+    // than doing its reads and then failing at COMMIT.
+    //
+    // Exit discipline: every path out of this block goes through commit_rv() or
+    // dberr(). Logical rejections still COMMIT — an epoch pin performed above
+    // is legitimate state advancement and must survive, exactly as it did
+    // before this change. Only a genuine sqlite failure ROLLBACKs, and it fails
+    // the admit instead of reporting a write that never landed as success.
+    if (!tx_begin(s)) return fail(err, errlen, "cannot begin transaction");
+    #define dberr()      do { tx_abort(s); return fail(err, errlen, "state write failed"); } while (0)
+    #define commit_rv(r) do { if (!tx_commit(s)) dberr(); return (r); } while (0)
+    #define commit_fail(m) do { fail(err, errlen, m); if (!tx_commit(s)) dberr(); return 0; } while (0)
+
     // epoch pin: owner changed ⇒ held rows are a prior epoch. Wipe, and raise
     // the floor to tip−REORG so the prior epoch cannot replay (fresh ops anchor
     // at tip−REORG, so the new owner is never blocked by this).
-    NameMeta m; meta_get(s, p.name, p.name_len, &m);
+    NameMeta m;
+    if (!meta_get(s, p.name, p.name_len, &m)) dberr();
     if (m.present && memcmp(m.owner, owner, 20) != 0) {
-        rows_wipe(s, p.name, p.name_len);
+        if (!rows_wipe(s, p.name, p.name_len)) dberr();
         uint32_t tip = o->tip(o->u);
         m.floor = tip > SP_STATE_REORG ? tip - SP_STATE_REORG : 0;
         m.sum = 0;
         memcpy(m.owner, owner, 20);
-        meta_put(s, p.name, p.name_len, &m, NULL, NULL, 0);   // clears clear_blob? no — keep schema simple:
+        if (!meta_put(s, p.name, p.name_len, &m, NULL, NULL, 0)) dberr();
         // a prior epoch's clear is void with its rows; drop it explicitly.
         sqlite3_stmt *st;
-        sqlite3_prepare_v2(s->db, "UPDATE st_names SET clear_id=NULL,clear_blob=NULL WHERE name=?", -1, &st, NULL);
+        if (sqlite3_prepare_v2(s->db, "UPDATE st_names SET clear_id=NULL,clear_blob=NULL WHERE name=?",
+                               -1, &st, NULL) != SQLITE_OK) dberr();
         sqlite3_bind_text(st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
-        sqlite3_step(st); sqlite3_finalize(st);
+        if (!step_done(st)) dberr();
     }
     if (!m.present) memcpy(m.owner, owner, 20);
 
     if (p.op == SP_OP_CLEAR) {
         sqlite3_stmt *st;
-        sqlite3_prepare_v2(s->db, "SELECT clear_id FROM st_names WHERE name=?", -1, &st, NULL);
+        if (sqlite3_prepare_v2(s->db, "SELECT clear_id FROM st_names WHERE name=?", -1, &st, NULL) != SQLITE_OK) dberr();
         sqlite3_bind_text(st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
         int dup = sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 32
                && memcmp(sqlite3_column_blob(st, 0), p.op_id, 32) == 0;
         sqlite3_finalize(st);
-        if (dup) return -1;
+        if (dup) commit_rv(-1);
         if (m.present && m.floor > 0 && p.anchor <= m.floor)
-            return fail(err, errlen, "clear at or below floor");
+            commit_fail("clear at or below floor");
         // void everything anchored below the new floor; survivors keep their bytes
-        sqlite3_prepare_v2(s->db, "DELETE FROM st_rows WHERE name=? AND anchor<?", -1, &st, NULL);
+        if (sqlite3_prepare_v2(s->db, "DELETE FROM st_rows WHERE name=? AND anchor<?", -1, &st, NULL) != SQLITE_OK) dberr();
         sqlite3_bind_text (st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
         sqlite3_bind_int64(st, 2, (int64_t)p.anchor);
-        sqlite3_step(st); sqlite3_finalize(st);
-        sqlite3_prepare_v2(s->db, "SELECT COALESCE(SUM(LENGTH(blob)),0) FROM st_rows WHERE name=?", -1, &st, NULL);
+        if (!step_done(st)) dberr();
+        if (sqlite3_prepare_v2(s->db, "SELECT COALESCE(SUM(LENGTH(blob)),0) FROM st_rows WHERE name=?", -1, &st, NULL) != SQLITE_OK) dberr();
         sqlite3_bind_text(st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
-        int64_t survivors = sqlite3_step(st) == SQLITE_ROW ? sqlite3_column_int64(st, 0) : 0;
+        int survivors_ok = sqlite3_step(st) == SQLITE_ROW;
+        int64_t survivors = survivors_ok ? sqlite3_column_int64(st, 0) : 0;
         sqlite3_finalize(st);
-        if (survivors + len > budget) return fail(err, errlen, "per-name budget");
+        if (!survivors_ok) dberr();
+        if (survivors + len > budget) commit_fail("per-name budget");
         m.floor = p.anchor;
         m.sum = survivors + len;
-        meta_put(s, p.name, p.name_len, &m, p.op_id, e, len);
-        return 1;
+        if (!meta_put(s, p.name, p.name_len, &m, p.op_id, e, len)) dberr();
+        commit_rv(1);
     }
 
     // PUT / DEL — one row per key, strictly-higher anchor wins
-    if (p.anchor < m.floor) return fail(err, errlen, "anchor below floor");
+    if (p.anchor < m.floor) commit_fail("anchor below floor");
     sqlite3_stmt *st;
-    sqlite3_prepare_v2(s->db, "SELECT anchor,op_id,LENGTH(blob) FROM st_rows WHERE name=? AND key=?", -1, &st, NULL);
+    if (sqlite3_prepare_v2(s->db, "SELECT anchor,op_id,LENGTH(blob) FROM st_rows WHERE name=? AND key=?",
+                           -1, &st, NULL) != SQLITE_OK) dberr();
     sqlite3_bind_text(st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
     sqlite3_bind_blob(st, 2, p.key, p.key_len, SQLITE_STATIC);
     int64_t held_anchor = -1, held_len = 0; int dup = 0;
-    if (sqlite3_step(st) == SQLITE_ROW) {
+    int qrc = sqlite3_step(st);
+    if (qrc == SQLITE_ROW) {
         held_anchor = sqlite3_column_int64(st, 0);
         dup = sqlite3_column_bytes(st, 1) == 32 && memcmp(sqlite3_column_blob(st, 1), p.op_id, 32) == 0;
         held_len = sqlite3_column_int64(st, 2);
     }
     sqlite3_finalize(st);
-    if (dup) return -1;
+    if (qrc != SQLITE_ROW && qrc != SQLITE_DONE) dberr();
+    if (dup) commit_rv(-1);
     if ((int64_t)p.anchor <= held_anchor)
-        return fail(err, errlen, "anchor does not raise the key (rate limit)");
-    if (m.sum - held_len + len > budget) return fail(err, errlen, "per-name budget");
+        commit_fail("anchor does not raise the key (rate limit)");
+    if (m.sum - held_len + len > budget) commit_fail("per-name budget");
 
-    sqlite3_prepare_v2(s->db,
+    if (sqlite3_prepare_v2(s->db,
         "INSERT OR REPLACE INTO st_rows(name,key,op,anchor,op_id,blob) VALUES(?,?,?,?,?,?)",
-        -1, &st, NULL);
+        -1, &st, NULL) != SQLITE_OK) dberr();
     sqlite3_bind_text (st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
     sqlite3_bind_blob (st, 2, p.key, p.key_len, SQLITE_STATIC);
     sqlite3_bind_int  (st, 3, p.op);
     sqlite3_bind_int64(st, 4, (int64_t)p.anchor);
     sqlite3_bind_blob (st, 5, p.op_id, 32, SQLITE_STATIC);
     sqlite3_bind_blob (st, 6, e, len, SQLITE_STATIC);
-    sqlite3_step(st); sqlite3_finalize(st);
+    if (!step_done(st)) dberr();
     m.sum = m.sum - held_len + len;
-    meta_put(s, p.name, p.name_len, &m, NULL, NULL, 0);
-    return 1;
+    if (!meta_put(s, p.name, p.name_len, &m, NULL, NULL, 0)) dberr();
+    commit_rv(1);
+    #undef dberr
+    #undef commit_rv
+    #undef commit_fail
 }
 
 // ── reads ────────────────────────────────────────────────────────────────────
@@ -498,10 +576,14 @@ int sp_state_names(SpState *s, int (*cb)(void *u, const char *name), void *u) {
 void sp_state_drop_name(SpState *s, const char *name) {
     static const char *Q[2] = { "DELETE FROM st_rows WHERE name=?",
                                 "DELETE FROM st_names WHERE name=?" };
+    // Both deletes are one logical drop: rows without their st_names row (or
+    // the reverse) is a half-dropped name. Transaction + checked steps.
+    if (!tx_begin(s)) return;
     for (int i = 0; i < 2; i++) {
         sqlite3_stmt *st;
-        sqlite3_prepare_v2(s->db, Q[i], -1, &st, NULL);
+        if (sqlite3_prepare_v2(s->db, Q[i], -1, &st, NULL) != SQLITE_OK) { tx_abort(s); return; }
         sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-        sqlite3_step(st); sqlite3_finalize(st);
+        if (!step_done(st)) { tx_abort(s); return; }
     }
+    if (!tx_commit(s)) tx_abort(s);
 }

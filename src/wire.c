@@ -12,21 +12,27 @@ int sp_wvar(uint8_t *o, uint64_t v) {
 }
 
 int sp_rvar(const uint8_t *c, int len, int *off, uint64_t *v) {
-    if (*off >= len) return 0;
+    if (*off < 0 || *off >= len) return 0;
+    // remaining is >= 1 here; compare by subtraction so `*off + n` can never
+    // overflow int for a caller that hands us a large offset.
+    int remaining = len - *off;
     uint8_t b = c[*off];
     if (b < 0xFD)  { *v = b; *off += 1; return 1; }
     if (b == 0xFD) {
-        if (*off + 3 > len) return 0;
-        *v = (uint64_t)c[*off + 1] | ((uint64_t)c[*off + 2] << 8);
-        *off += 3; return 1;
+        if (remaining < 3) return 0;
+        uint64_t y = (uint64_t)c[*off + 1] | ((uint64_t)c[*off + 2] << 8);
+        if (y < 0xFD) return 0;          /* non-minimal: must have used 1 byte */
+        *v = y; *off += 3; return 1;
     }
     if (b == 0xFE) {
-        if (*off + 5 > len) return 0;
+        if (remaining < 5) return 0;
         uint64_t x = 0; for (int i = 0; i < 4; i++) x |= (uint64_t)c[*off + 1 + i] << (8 * i);
+        if (x <= 0xFFFF) return 0;       /* non-minimal: must have used the 3-byte form */
         *v = x; *off += 5; return 1;
     }
-    if (*off + 9 > len) return 0;
+    if (remaining < 9) return 0;
     uint64_t x = 0; for (int i = 0; i < 8; i++) x |= (uint64_t)c[*off + 1 + i] << (8 * i);
+    if (x <= 0xFFFFFFFFULL) return 0;    /* non-minimal: must have used the 5-byte form */
     *v = x; *off += 9; return 1;
 }
 

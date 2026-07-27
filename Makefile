@@ -81,11 +81,86 @@ $(SECPLIB):
 	      -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=OFF -DSECP256K1_ENABLE_MODULE_MUSIG=OFF \
 	      -DSECP256K1_ENABLE_MODULE_ELLSWIFT=OFF >/dev/null && cmake --build $(IDX)/build/secp -j >/dev/null
 
-check: net_test state_test
+check: net_test state_test crypto_test wire_test view_test
 	./net_test
 	./state_test
+	@rc=0; for t in crypto_test wire_test view_test; do \
+	   echo "== ./$$t =="; ./$$t || rc=1; done; \
+	 if [ $$rc -ne 0 ]; then \
+	   echo "make check: a suite FAILED — see the FINDING banners above"; exit 1; \
+	 fi; echo "make check: every suite passed"
 
 clean:
 	rm -rf $(B) $(LIB) net_test state_test
+	rm -f crypto_test wire_test view_test jitter_test wire_test_ubsan
+	rm -rf *.dSYM
 
 .PHONY: all check clean
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Adversarial suites (crypto / wire / view / jitter). Added as new rules only —
+# the net_test and state_test rules above are untouched.
+#
+#   make check           net_test, state_test, crypto_test, wire_test, view_test
+#   make check-jitter    jitter_test (slow: threads + 0-2 ms sleeps)
+#   make TSAN=1 check-jitter      same, under ThreadSanitizer
+#   ./crypto_test <seed> / ./wire_test <seed> / ...   replay an exact run
+#
+# Each test links the least it can: crypto_test touches only crypto.c and needs
+# NO sqlite; wire_test/view_test/jitter_test pull state.o/view.o and so do.
+# ═════════════════════════════════════════════════════════════════════════════
+ifeq ($(TSAN),1)
+SAN      := -fsanitize=thread -fno-omit-frame-pointer -g -O1
+else
+SAN      :=
+endif
+PTHREAD  := -lpthread
+
+crypto_test: $(B)/crypto_test.o $(LIB) $(SECPLIB)
+	$(CC) $(CFLAGS) $(SAN) -o $@ $< $(LIB) $(SECPLIB)
+
+wire_test: $(B)/wire_test.o $(LIB) $(SECPLIB)
+	$(CC) $(CFLAGS) $(SAN) -o $@ $< $(LIB) $(SECPLIB) $(SQLITE_LIBS)
+
+view_test: $(B)/view_test.o $(LIB) $(SECPLIB)
+	$(CC) $(CFLAGS) $(SAN) -o $@ $< $(LIB) $(SECPLIB) $(SQLITE_LIBS)
+
+jitter_test: $(B)/jitter_test.o $(LIB) $(SECPLIB)
+	$(CC) $(CFLAGS) $(SAN) -o $@ $< $(LIB) $(SECPLIB) $(SQLITE_LIBS) $(PTHREAD)
+
+$(B)/crypto_test.o: test/crypto_test.c | $(B); $(CC) $(CFLAGS) $(SAN) $(INC) -c -o $@ $<
+$(B)/wire_test.o:   test/wire_test.c   | $(B); $(CC) $(CFLAGS) $(SAN) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
+$(B)/view_test.o:   test/view_test.c   | $(B); $(CC) $(CFLAGS) $(SAN) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
+$(B)/jitter_test.o: test/jitter_test.c | $(B); $(CC) $(CFLAGS) $(SAN) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
+
+check-jitter: jitter_test
+	./jitter_test
+
+# UBSan build of the LIBRARY (not just the test), into build/ubsan/. Use this
+# when -fsanitize=address / =thread will not run: on macOS 26 / Apple clang 17
+# (and Homebrew clang 20) the ASan and TSan runtimes abort before main — a bare
+# `int main(){puts("hi");}` exits 137/139 — while UBSan works normally.
+#   make check-ubsan     -> pins the exact file:line of any UB in the decoders
+UB      := -fsanitize=undefined -fno-sanitize-recover=all -g -O1 -std=c11
+UBDIR   := $(B)/ubsan
+UBOBJ   := $(UBDIR)/wire.o $(UBDIR)/view.o $(UBDIR)/crypto.o $(UBDIR)/state.o \
+           $(UBDIR)/sha256.o $(UBDIR)/ripemd160.o $(UBDIR)/secp_shim.o
+
+$(UBDIR):
+	mkdir -p $(UBDIR)
+
+$(UBDIR)/wire.o:       src/wire.c        | $(UBDIR); $(CC) $(UB) $(INC) -c -o $@ $<
+$(UBDIR)/view.o:       src/view.c        | $(UBDIR); $(CC) $(UB) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
+$(UBDIR)/crypto.o:     src/crypto.c      | $(UBDIR); $(CC) $(UB) $(INC) $(INC_SM) -c -o $@ $<
+$(UBDIR)/state.o:      src/state.c       | $(UBDIR); $(CC) $(UB) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
+$(UBDIR)/sha256.o:     $(SMDIR)/sha256.c | $(UBDIR); $(CC) $(UB) $(INC_SM) -c -o $@ $<
+$(UBDIR)/ripemd160.o:  $(SMDIR)/ripemd160.c | $(UBDIR); $(CC) $(UB) $(INC_SM) -c -o $@ $<
+$(UBDIR)/secp_shim.o:  $(SHIMSRC)        | $(UBDIR); $(CC) $(UB) $(INC_SHIM) -c -o $@ $<
+
+wire_test_ubsan: test/wire_test.c $(UBOBJ) $(SECPLIB)
+	$(CC) $(UB) $(INC) $(SQLITE_CFLAGS) -o $@ $< $(UBOBJ) $(SECPLIB) $(SQLITE_LIBS)
+
+check-ubsan: wire_test_ubsan
+	./wire_test_ubsan
+
+.PHONY: check-jitter check-ubsan
