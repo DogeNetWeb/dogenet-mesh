@@ -15,7 +15,9 @@
 # orders, then linking (same dance as namespace-indexer / carrier).
 
 CC      ?= cc
-CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wshadow
+# -std=c11 hides fdopen/mkdtemp on glibc (Ubuntu 24.04). _DEFAULT_SOURCE
+# restores POSIX without switching the dialect to gnu11. Harmless on Darwin.
+CFLAGS  ?= -std=c11 -D_DEFAULT_SOURCE -O2 -Wall -Wextra -Wshadow
 AR      ?= ar
 
 # Protocol-sm primitives (SHA-256 / RIPEMD-160 / secp_* interface + shim).
@@ -141,7 +143,7 @@ check-jitter: jitter_test
 # (and Homebrew clang 20) the ASan and TSan runtimes abort before main — a bare
 # `int main(){puts("hi");}` exits 137/139 — while UBSan works normally.
 #   make check-ubsan     -> pins the exact file:line of any UB in the decoders
-UB      := -fsanitize=undefined -fno-sanitize-recover=all -g -O1 -std=c11
+UB      := -fsanitize=undefined -fno-sanitize-recover=all -g -O1 -std=c11 -D_DEFAULT_SOURCE
 UBDIR   := $(B)/ubsan
 UBOBJ   := $(UBDIR)/wire.o $(UBDIR)/view.o $(UBDIR)/crypto.o $(UBDIR)/state.o \
            $(UBDIR)/sha256.o $(UBDIR)/ripemd160.o $(UBDIR)/secp_shim.o
