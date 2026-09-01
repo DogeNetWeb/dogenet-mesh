@@ -38,7 +38,7 @@
 //      reading, in the "-- side-channel review --" section. (No timing measured.)
 //
 // Links crypto.c only — no sqlite, no state/view.
-#include "pepenet/crypto.h"
+#include "dogenet/crypto.h"
 
 #include <setjmp.h>
 #include <signal.h>

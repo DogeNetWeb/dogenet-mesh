@@ -2,7 +2,7 @@
 // locked SHA-256/RIPEMD-160; curve ops = vendored libsecp256k1 via secp_shim.c.
 // Base58Check is self-contained here (over the linked SHA-256) so the network lib
 // carries no indexer dependency.
-#include "pepenet/crypto.h"
+#include "dogenet/crypto.h"
 
 #include <string.h>
 

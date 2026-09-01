@@ -1,7 +1,7 @@
 // wire.c — CompactSize + LE codec. Byte-compatible with the namespace protocol's
 // vp_wvar/vp_rvar (impls/c/src/vpost_core.c) and Dogecoin's CompactSize, so an
 // overlay frame and its on-chain form are the same bytes.
-#include "pepenet/wire.h"
+#include "dogenet/wire.h"
 
 int sp_wvar(uint8_t *o, uint64_t v) {
     if (v < 0xFD)            { o[0] = (uint8_t)v; return 1; }

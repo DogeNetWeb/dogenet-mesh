@@ -1,5 +1,5 @@
 build/
-libpepenetnet.a
+libdogenetnet.a
 net_test
 *.o
 state_test

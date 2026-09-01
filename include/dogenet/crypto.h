@@ -1,4 +1,4 @@
-// crypto.h — the shared crypto facade for pepenet overlays.
+// crypto.h — the shared crypto facade for dogenet overlays.
 //
 // One small surface over the AUDITED primitives the rest of the family already
 // pins: protocol-sm's byte-locked SHA-256 / RIPEMD-160, and ALL curve math on the
@@ -15,8 +15,8 @@
 // Names are pure decoration on that identity. Consensus name rules (§3.1) live
 // here so every overlay (DNS apex, overlay handles, …) refuses the same labels the
 // fold refuses — reject, never case-fold.
-#ifndef PEPENET_CRYPTO_H
-#define PEPENET_CRYPTO_H
+#ifndef DOGENET_CRYPTO_H
+#define DOGENET_CRYPTO_H
 
 #include <stdint.h>
 #include <stddef.h>

@@ -1,4 +1,4 @@
-// jitter_test.c — ordering / interleaving stress for the pepenet-mesh state
+// jitter_test.c — ordering / interleaving stress for the dogenet-mesh state
 // machine, plus the one genuine concurrency surface the design does claim.
 //
 // ── THREADING: WHAT IS ACTUALLY HERE ────────────────────────────────────────
@@ -52,9 +52,9 @@
 // directory and are removed on exit.
 //
 // Build with TSAN=1 to add -fsanitize=thread (see the Makefile).
-#include "pepenet/state.h"
-#include "pepenet/view.h"
-#include "pepenet/crypto.h"
+#include "dogenet/state.h"
+#include "dogenet/view.h"
+#include "dogenet/crypto.h"
 
 #include <pthread.h>
 #include <setjmp.h>
@@ -70,7 +70,7 @@ static long g_checks;
 #define CK(c, m) do { g_checks++; if (c) printf("  ok   %s\n", m); \
                       else { printf("  FAIL %s\n", m); g_fail++; } } while (0)
 
-static char g_dir[] = "/tmp/pepenet-mesh-jitter.XXXXXX";
+static char g_dir[] = "/tmp/dogenet-mesh-jitter.XXXXXX";
 static int  g_dir_ok;
 
 static const char *g_phase = "startup";

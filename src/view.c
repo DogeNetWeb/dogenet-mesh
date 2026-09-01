@@ -8,8 +8,8 @@
 // that height, including lapses. For heights the history does not cover (a DB
 // predating the projection, until a refold backfills it), it falls back to the
 // current owner — conservative for impersonation (a non-owner never passes).
-#include "pepenet/view.h"
-#include "pepenet/crypto.h"
+#include "dogenet/view.h"
+#include "dogenet/crypto.h"
 
 #include <stdio.h>
 #include <stdlib.h>

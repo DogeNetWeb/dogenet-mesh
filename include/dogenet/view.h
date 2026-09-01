@@ -5,15 +5,15 @@
 // daemon runs safely alongside a live indexerd. Test mode loads a static
 // name→owner table from a file so a mesh can be exercised with no chain at all.
 //
-// This is the identity root every pepenet overlay shares: the chain settles
+// This is the identity root every dogenet overlay shares: the chain settles
 // "name → owner @ height", overlays decide what to hang off that. Lifted from the
 // vpost carrier's view.c (the two must stay behaviorally identical — §4.2).
 //
 // Names are the namespace-protocol §3.1 DNS-label set ([a-z0-9-], 1..32). Lookups
 // of an invalid name return unowned (0) without hitting the DB — consensus can
 // never mint them, so an overlay need not special-case junk labels.
-#ifndef PEPENET_VIEW_H
-#define PEPENET_VIEW_H
+#ifndef DOGENET_VIEW_H
+#define DOGENET_VIEW_H
 
 #include <stdint.h>
 

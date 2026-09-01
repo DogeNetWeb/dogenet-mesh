@@ -1,11 +1,11 @@
-// wire.h — the Dogecoin-family wire primitives shared by every pepenet overlay.
+// wire.h — the Dogecoin-family wire primitives shared by every dogenet overlay.
 //
 // CompactSize varints + little-endian u32, byte-for-byte the encoding the chain
 // itself uses (and the vpost mesh, and the namespace protocol) — so an overlay
 // message and its on-chain escape-hatch form serialize identically. No I/O, no
 // allocation, no globals.
-#ifndef PEPENET_WIRE_H
-#define PEPENET_WIRE_H
+#ifndef DOGENET_WIRE_H
+#define DOGENET_WIRE_H
 
 #include <stdint.h>
 

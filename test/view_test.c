@@ -32,9 +32,9 @@
 //     `epochs_from` horizon, and the documented fallback to the current owner.
 //
 // Fixtures live in a mkdtemp'd directory and are removed on exit. No network,
-// no ~/.pepenet.
-#include "pepenet/view.h"
-#include "pepenet/crypto.h"
+// no ~/.dogenet.
+#include "dogenet/view.h"
+#include "dogenet/crypto.h"
 
 #include <setjmp.h>
 #include <signal.h>
@@ -50,7 +50,7 @@ static long g_checks;
 #define CK(c, m) do { g_checks++; if (c) printf("  ok   %s\n", m); \
                       else { printf("  FAIL %s\n", m); g_fail++; } } while (0)
 
-static char g_dir[] = "/tmp/pepenet-mesh-view.XXXXXX";
+static char g_dir[] = "/tmp/dogenet-mesh-view.XXXXXX";
 static int  g_dir_ok;
 
 static const char *g_phase = "startup";

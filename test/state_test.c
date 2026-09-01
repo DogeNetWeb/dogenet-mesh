@@ -4,9 +4,9 @@
 // The chain is faked: header_at() answers a deterministic hash for heights
 // <= FAKE_TIP and 0 above (exactly the contract a real header store gives),
 // and the ownership view is view.c's test mode loaded from a temp file.
-#include "pepenet/state.h"
-#include "pepenet/view.h"
-#include "pepenet/crypto.h"
+#include "dogenet/state.h"
+#include "dogenet/view.h"
+#include "dogenet/crypto.h"
 
 #include <stdio.h>
 #include <stdlib.h>

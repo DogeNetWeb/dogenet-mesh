@@ -5,9 +5,9 @@
 // migration keep verifying; the op envelope is NEW (SP_STATE_VER leads the
 // preimage, so a state-op signature can never be replayed as a vpost entry or
 // a chain structure, and vice versa).
-#include "pepenet/state.h"
-#include "pepenet/crypto.h"
-#include "pepenet/wire.h"
+#include "dogenet/state.h"
+#include "dogenet/crypto.h"
+#include "dogenet/wire.h"
 
 #include <sqlite3.h>
 #include <stdio.h>

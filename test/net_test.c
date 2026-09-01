@@ -1,4 +1,4 @@
-// net_test.c — self-test battery for pepenet-mesh.
+// net_test.c — self-test battery for dogenet-mesh.
 //
 // Proves the shared substrate end-to-end with REAL data: the dev key
 // e32056… derives to the pubkey whose hash160 is both the payload of the
@@ -7,9 +7,9 @@
 //
 // Also pins §3.1 name rules (sp_name_valid) so overlays refuse the same labels
 // consensus refuses, and a chainless test-mode view for mesh bootstraps.
-#include "pepenet/wire.h"
-#include "pepenet/crypto.h"
-#include "pepenet/view.h"
+#include "dogenet/wire.h"
+#include "dogenet/crypto.h"
+#include "dogenet/view.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -31,7 +31,7 @@ static int hexbytes(const char *h, uint8_t *out, int n) {
     return 1;
 }
 
-// the key that actually owns `pepenet` on pepecoin (~/.pepenet/pep-test2.key →
+// the key that actually owns `pepenet` on pepecoin (~/.dogenet/pep-test2.key →
 // address PqoGtDz…, hash160 c406ee39… == names.owner for `pepenet`).
 static const char *DEV_PRIV = "1f2d2cd99384a259508dfe82a1b28877e64f8e1dc4561bbf4641f4a4247dfd4e";
 static const char *DEV_ADDR = "PqoGtDzCCSbR6yiwG8Ch9VeyXw7uTNUYTi";
@@ -40,8 +40,8 @@ static void test_name_valid(void) {
     printf("name: §3.1 DNS-label rules (sp_name_valid)\n");
     OK(sp_name_valid("a", 1), "single letter");
     OK(sp_name_valid("0", 1), "single digit");
-    OK(sp_name_valid("pepenet", 7), "pepenet");
-    OK(sp_name_valid("wallet-pepenet", 14), "hyphen mid-label");
+    OK(sp_name_valid("dogenet", 7), "dogenet");
+    OK(sp_name_valid("wallet-dogenet", 14), "hyphen mid-label");
     OK(sp_name_valid("a1b2c3", 6), "alnum mix");
 
     char max32[33];
@@ -74,7 +74,7 @@ static void test_view_testmode(const uint8_t owner[20]) {
     // 128-byte snprintf would truncate the multi-row fixture).
     FILE *wf = fdopen(fd, "w");
     if (!wf) { close(fd); unlink(path); OK(0, "fdopen names file"); return; }
-    fprintf(wf, "pepenet %s\n", h);
+    fprintf(wf, "dogenet %s\n", h);
     fprintf(wf, "Alice %s\n", h);       /* uppercase — skip */
     fprintf(wf, "foo.bar %s\n", h);     /* dot — skip */
     fprintf(wf, "xn--bad %s\n", h);     /* ACE — skip */
@@ -86,8 +86,8 @@ static void test_view_testmode(const uint8_t owner[20]) {
     if (v) {
         OK(sp_view_tip(v) == 1000, "test tip = 1000");
         uint8_t got[20];
-        OK(sp_view_owner_now(v, "pepenet", got) && memcmp(got, owner, 20) == 0,
-           "pepenet owned in test table");
+        OK(sp_view_owner_now(v, "dogenet", got) && memcmp(got, owner, 20) == 0,
+           "dogenet owned in test table");
         OK(sp_view_owner_now(v, "also-mine", got) && memcmp(got, owner, 20) == 0,
            "also-mine owned in test table");
         OK(!sp_view_owner_now(v, "Alice", got), "invalid uppercase not loaded");
@@ -136,7 +136,7 @@ int main(int argc, char **argv) {
        "re-encode reproduces the wallet address");
 
     printf("crypto: ECDSA sign / verify\n");
-    uint8_t digest[32]; sp_sha256((const uint8_t *)"pepenet zone v1", 15, digest);
+    uint8_t digest[32]; sp_sha256((const uint8_t *)"dogenet zone v1", 15, digest);
     uint8_t sig[64];
     OK(sp_ecdsa_sign(priv, digest, sig), "sign digest");
     OK(sp_ecdsa_verify(digest, sig, pub, 33), "verify good signature");

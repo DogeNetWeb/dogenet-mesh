@@ -31,8 +31,8 @@
 // whose anchor is its inclusion height, authenticated by the spend instead of
 // the in-band sig — same axis, one comparison rule. (That path is the host's;
 // this module admits the gossiped, in-band-signed form.)
-#ifndef PEPENET_STATE_H
-#define PEPENET_STATE_H
+#ifndef DOGENET_STATE_H
+#define DOGENET_STATE_H
 
 #include <stdint.h>
 

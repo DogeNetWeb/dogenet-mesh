@@ -1,9 +1,9 @@
-# pepenet-mesh — the shared substrate every pepenet overlay links.
+# dogenet-mesh — the shared substrate every dogenet overlay links.
 #
-# Produces a static lib (libpepenetnet.a) + headers under include/pepenet/.
+# Produces a static lib (libdogenetnet.a) + headers under include/dogenet/.
 # Hashes and the secp_* shim come from the live namespace-protocol tree (names-
 # only SM); curve math is the vendored constant-time libsecp256k1 (built once
-# under pepenet-social, same pin the carrier uses).
+# under namespace-indexer, same pin the carrier uses).
 #
 #   make            build lib + ./net_test
 #   make check      build and run the self-test battery
@@ -40,7 +40,7 @@ INC     := -Iinclude
 INC_SM  := -I$(SMDIR)                            # protocol-sm's secp256k1.h (quoted)
 INC_SHIM:= -I$(SECPDIR)/include -I$(SMDIR)       # vendored secp256k1.h (angle)
 
-LIB     := libpepenetnet.a
+LIB     := libdogenetnet.a
 # our own modules
 OBJ     := $(B)/wire.o $(B)/view.o $(B)/crypto.o $(B)/state.o
 # borrowed primitives, compiled into the same archive so consumers link one .a

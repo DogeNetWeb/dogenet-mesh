@@ -30,9 +30,9 @@
 // *** THIS SUITE FAILS. The failure is a real bug in src/state.c — see the
 // *** FINDING banner in "-- declared-length attacks --". The test is NOT
 // *** weakened to hide it.
-#include "pepenet/wire.h"
-#include "pepenet/state.h"
-#include "pepenet/crypto.h"
+#include "dogenet/wire.h"
+#include "dogenet/state.h"
+#include "dogenet/crypto.h"
 
 #include <setjmp.h>
 #include <signal.h>
@@ -384,7 +384,7 @@ int main(int argc, char **argv) {
                    "      fe 00 00 00 00        -> 0\n"
                    "      ff 00 00 00 00 00 00 00 00 -> 0\n"
                    "  Bitcoin/Dogecoin Core's ReadCompactSize() rejects these with\n"
-                   "  \"non-canonical ReadCompactSize()\". include/pepenet/wire.h claims\n"
+                   "  \"non-canonical ReadCompactSize()\". include/dogenet/wire.h claims\n"
                    "  the codec is \"byte-for-byte the encoding the chain itself uses\",\n"
                    "  so this is a divergence: an op can be re-encoded into several\n"
                    "  distinct byte strings that all parse identically. Because\n"
