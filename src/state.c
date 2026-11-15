@@ -573,6 +573,41 @@ int sp_state_names(SpState *s, int (*cb)(void *u, const char *name), void *u) {
     return n;
 }
 
+// Paged name walk (read-only; no schema change): names strictly after `after`
+// ("" or NULL = from the start), in name order, at most `limit`. Lets the
+// overlay page its anti-entropy and the expiry sweep resume where it stopped
+// instead of rescanning the same first rows.
+int sp_state_names_after(SpState *s, const char *after, int limit,
+                         int (*cb)(void *u, const char *name), void *u) {
+    sqlite3_stmt *st; int n = 0;
+    if (limit <= 0) return 0;
+    if (sqlite3_prepare_v2(s->db, "SELECT name FROM st_names WHERE name>? ORDER BY name LIMIT ?",
+                           -1, &st, NULL) != SQLITE_OK) return 0;
+    sqlite3_bind_text(st, 1, after ? after : "", -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, limit);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        n++;
+        if (!cb(u, (const char *)sqlite3_column_text(st, 0))) break;
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+// The owner the held rows were admitted under (st_names.owner, pinned by the
+// epoch logic in sp_state_admit). 1 = known (owner filled), 0 = no row.
+int sp_state_owner(SpState *s, const char *name, uint8_t owner[20]) {
+    sqlite3_stmt *st; int found = 0;
+    if (sqlite3_prepare_v2(s->db, "SELECT owner FROM st_names WHERE name=?", -1, &st, NULL) != SQLITE_OK)
+        return 0;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_bytes(st, 0) == 20) {
+        memcpy(owner, sqlite3_column_blob(st, 0), 20);
+        found = 1;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 void sp_state_drop_name(SpState *s, const char *name) {
     static const char *Q[2] = { "DELETE FROM st_rows WHERE name=?",
                                 "DELETE FROM st_names WHERE name=?" };

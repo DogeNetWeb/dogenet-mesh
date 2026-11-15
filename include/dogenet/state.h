@@ -170,6 +170,11 @@ int     sp_state_clear_get(SpState *s, const char *name, uint8_t **blob, int *bl
 int     sp_state_names(SpState *s, int (*cb)(void *u, const char *name), void *u);
 // Drop everything held for a name (expiry sweep: view says unowned → gone).
 void    sp_state_drop_name(SpState *s, const char *name);
+// paged walk: names > after (NULL/"" = start), name order, <= limit (read-only)
+int     sp_state_names_after(SpState *s, const char *after, int limit,
+                             int (*cb)(void *u, const char *name), void *u);
+// owner the held rows belong to (st_names.owner); 1 known, 0 no row
+int     sp_state_owner(SpState *s, const char *name, uint8_t owner[20]);
 
 #ifdef __cplusplus
 }
