@@ -235,7 +235,13 @@ int sp_state_op_parse(const uint8_t *e, int len, SpStateOp *out) {
 }
 
 // ── store ────────────────────────────────────────────────────────────────────
-struct SpState { sqlite3 *db; };
+struct SpState {
+    sqlite3 *db;
+    int      batch;                       // L9: inside sp_state_batch_begin/end
+    void   (*on_change)(void *u, const char *name);   // L10: write notifier
+    void    *on_change_u;
+    sqlite3_stmt *q_dv;                   // L10: cached "PRAGMA data_version"
+};
 
 static const char *SCHEMA =
     "PRAGMA journal_mode=WAL;"
@@ -261,7 +267,37 @@ SpState *sp_state_open(const char *path) {
     return s;
 }
 
-void sp_state_close(SpState *s) { if (s) { sqlite3_close(s->db); free(s); } }
+void sp_state_close(SpState *s) {
+    if (!s) return;
+    if (s->on_change) s->on_change(s->on_change_u, "");      // "" = this handle is closing
+    if (s->q_dv) sqlite3_finalize(s->q_dv);
+    sqlite3_close(s->db); free(s);
+}
+
+// L10: the host may cache per-name derivations (dns_state's digest). Every
+// committed write through THIS handle calls fn(u, name); NULL name = "assume
+// everything changed" (a batch that failed to commit); "" = the handle is
+// closing (forget it; names are never empty).
+// Writes by OTHER connections/processes are visible via sp_state_data_version.
+void sp_state_set_change_hook(SpState *s, void (*fn)(void *u, const char *name), void *u) {
+    if (!s) return;
+    s->on_change = fn; s->on_change_u = u;
+}
+static void notify_change(SpState *s, const char *name) {
+    if (s->on_change) s->on_change(s->on_change_u, name);
+}
+// PRAGMA data_version: changes whenever ANOTHER connection commits to the file
+// (never for this connection's own commits). -1 on error.
+int64_t sp_state_data_version(SpState *s) {
+    if (!s) return -1;
+    if (!s->q_dv && sqlite3_prepare_v2(s->db, "PRAGMA data_version", -1, &s->q_dv, NULL) != SQLITE_OK) {
+        s->q_dv = NULL; return -1;
+    }
+    int64_t v = -1;
+    if (sqlite3_step(s->q_dv) == SQLITE_ROW) v = sqlite3_column_int64(s->q_dv, 0);
+    sqlite3_reset(s->q_dv);
+    return v;
+}
 
 // ── write plumbing ───────────────────────────────────────────────────────────
 // Every writer below checks sqlite3_step(). Ignoring it silently drops a write
@@ -277,9 +313,47 @@ static int step_done(sqlite3_stmt *st) {
 // BEGIN IMMEDIATE (not deferred): take the write lock at the top of the
 // critical section so two concurrent admits serialise here, instead of both
 // reading the same sum_bytes and colliding — or deadlocking — at COMMIT.
-static int tx_begin(SpState *s)  { return sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK; }
-static int tx_commit(SpState *s) { return sqlite3_exec(s->db, "COMMIT",  NULL, NULL, NULL) == SQLITE_OK; }
-static void tx_abort(SpState *s) { sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL); }
+//
+// L9 (batch): between sp_state_batch_begin and _end the whole dump is ONE
+// write transaction; each op's critical section becomes a SAVEPOINT inside it,
+// so an op that fails still rolls back alone (same per-op atomicity as before)
+// and the rest of the dump keeps going. If the outer transaction is gone
+// (sqlite auto-rolled it back on an I/O error) the batch is abandoned and ops
+// fall back to their own BEGIN IMMEDIATE, exactly as without a batch.
+static int tx_begin(SpState *s) {
+    if (s->batch && sqlite3_get_autocommit(s->db)) s->batch = 0;   // outer txn lost
+    if (s->batch) return sqlite3_exec(s->db, "SAVEPOINT sp_op", NULL, NULL, NULL) == SQLITE_OK;
+    return sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+}
+static int tx_commit(SpState *s) {
+    if (s->batch) return sqlite3_exec(s->db, "RELEASE sp_op", NULL, NULL, NULL) == SQLITE_OK;
+    return sqlite3_exec(s->db, "COMMIT",  NULL, NULL, NULL) == SQLITE_OK;
+}
+static void tx_abort(SpState *s) {
+    if (s->batch) {
+        sqlite3_exec(s->db, "ROLLBACK TO sp_op", NULL, NULL, NULL);
+        sqlite3_exec(s->db, "RELEASE sp_op", NULL, NULL, NULL);
+        return;
+    }
+    sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+}
+
+int sp_state_batch_begin(SpState *s) {
+    if (!s || s->batch || !sqlite3_get_autocommit(s->db)) return 0;
+    if (sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) return 0;
+    s->batch = 1;
+    return 1;
+}
+int sp_state_batch_end(SpState *s) {
+    if (!s) return 0;
+    int was = s->batch; s->batch = 0;
+    if (!was) return 1;                        // never opened / already abandoned
+    if (sqlite3_get_autocommit(s->db)) { notify_change(s, NULL); return 0; }   // auto-rolled back
+    if (sqlite3_exec(s->db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK) return 1;
+    sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, NULL);
+    notify_change(s, NULL);                    // nothing in the batch landed
+    return 0;
+}
 
 typedef struct {                                              // st_names row
     int      present;
@@ -359,6 +433,32 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
     if (!o->owner_now(o->u, name, owner))
         return fail(err, errlen, "name unowned");
 
+    // L5: an op_id we already hold (as a row or as the clear) is a duplicate:
+    // answer -1 BEFORE the ECDSA verify. Same outcome as before for the store
+    // (a dup never changed anything); a peer re-dumping captured valid ops no
+    // longer makes us verify each one again. (Identical to the check PepeNet's
+    // mesh already runs; op_id covers name, key, anchor, payload, cert, signer.)
+    { sqlite3_stmt *st;
+      int have = 0;
+      if (sqlite3_prepare_v2(s->db,
+              "SELECT 1 FROM st_rows WHERE name=? AND op_id=? LIMIT 1",
+              -1, &st, NULL) == SQLITE_OK) {
+          sqlite3_bind_text(st, 1, name, p.name_len, SQLITE_STATIC);
+          sqlite3_bind_blob(st, 2, p.op_id, 32, SQLITE_STATIC);
+          have = sqlite3_step(st) == SQLITE_ROW;
+          sqlite3_finalize(st);
+      }
+      if (!have && sqlite3_prepare_v2(s->db,
+              "SELECT 1 FROM st_names WHERE name=? AND clear_id=? LIMIT 1",
+              -1, &st, NULL) == SQLITE_OK) {
+          sqlite3_bind_text(st, 1, name, p.name_len, SQLITE_STATIC);
+          sqlite3_bind_blob(st, 2, p.op_id, 32, SQLITE_STATIC);
+          have = sqlite3_step(st) == SQLITE_ROW;
+          sqlite3_finalize(st);
+      }
+      if (have) return -1;
+    }
+
     // signature (low-S over op_id) + authority (owner key, or §2.2 cert with
     // the overlay's scope bit, minted by the owner, live at this op's anchor)
     if (!low_s(p.sig + 32)) return fail(err, errlen, "high-S signature");
@@ -402,9 +502,10 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
     // before this change. Only a genuine sqlite failure ROLLBACKs, and it fails
     // the admit instead of reporting a write that never landed as success.
     if (!tx_begin(s)) return fail(err, errlen, "cannot begin transaction");
+    int wrote = 0;                              // L10: notify only real writes
     #define dberr()      do { tx_abort(s); return fail(err, errlen, "state write failed"); } while (0)
-    #define commit_rv(r) do { if (!tx_commit(s)) dberr(); return (r); } while (0)
-    #define commit_fail(m) do { fail(err, errlen, m); if (!tx_commit(s)) dberr(); return 0; } while (0)
+    #define commit_rv(r) do { if (!tx_commit(s)) dberr(); if (wrote) notify_change(s, name); return (r); } while (0)
+    #define commit_fail(m) do { fail(err, errlen, m); if (!tx_commit(s)) dberr(); if (wrote) notify_change(s, name); return 0; } while (0)
 
     // epoch pin: owner changed ⇒ held rows are a prior epoch. Wipe, and raise
     // the floor to tip−REORG so the prior epoch cannot replay (fresh ops anchor
@@ -412,6 +513,7 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
     NameMeta m;
     if (!meta_get(s, p.name, p.name_len, &m)) dberr();
     if (m.present && memcmp(m.owner, owner, 20) != 0) {
+        wrote = 1;
         if (!rows_wipe(s, p.name, p.name_len)) dberr();
         uint32_t tip = o->tip(o->u);
         m.floor = tip > SP_STATE_REORG ? tip - SP_STATE_REORG : 0;
@@ -438,6 +540,7 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
         if (m.present && m.floor > 0 && p.anchor <= m.floor)
             commit_fail("clear at or below floor");
         // void everything anchored below the new floor; survivors keep their bytes
+        wrote = 1;                              // (committed even if the budget check below fails)
         if (sqlite3_prepare_v2(s->db, "DELETE FROM st_rows WHERE name=? AND anchor<?", -1, &st, NULL) != SQLITE_OK) dberr();
         sqlite3_bind_text (st, 1, (const char *)p.name, p.name_len, SQLITE_STATIC);
         sqlite3_bind_int64(st, 2, (int64_t)p.anchor);
@@ -451,6 +554,7 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
         if (survivors + len > budget) commit_fail("per-name budget");
         m.floor = p.anchor;
         m.sum = survivors + len;
+        wrote = 1;
         if (!meta_put(s, p.name, p.name_len, &m, p.op_id, e, len)) dberr();
         commit_rv(1);
     }
@@ -476,6 +580,7 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
         commit_fail("anchor does not raise the key (rate limit)");
     if (m.sum - held_len + len > budget) commit_fail("per-name budget");
 
+    wrote = 1;
     if (sqlite3_prepare_v2(s->db,
         "INSERT OR REPLACE INTO st_rows(name,key,op,anchor,op_id,blob) VALUES(?,?,?,?,?,?)",
         -1, &st, NULL) != SQLITE_OK) dberr();
@@ -620,5 +725,6 @@ void sp_state_drop_name(SpState *s, const char *name) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
         if (!step_done(st)) { tx_abort(s); return; }
     }
-    if (!tx_commit(s)) tx_abort(s);
+    if (!tx_commit(s)) { tx_abort(s); return; }
+    notify_change(s, name);
 }

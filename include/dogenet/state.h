@@ -152,6 +152,20 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
                    int64_t budget, uint64_t scope,
                    const uint8_t *e, int len, char *err, int errlen);
 
+// ── local performance hooks (no format, rule or result change) ────────────────
+// L9: run several admits as ONE write transaction (each admit is a savepoint
+// inside it, so one failed op still rolls back alone). begin: 1 opened, 0 not
+// (busy / already open: admits then commit one by one as before). end: 1
+// committed, 0 rolled back (nothing from the batch landed).
+int     sp_state_batch_begin(SpState *s);
+int     sp_state_batch_end(SpState *s);
+// L10: fn(u, name) after every committed write through this handle (name NULL
+// = everything may have changed (failed batch); "" = handle closing). One hook
+// per handle.
+void    sp_state_set_change_hook(SpState *s, void (*fn)(void *u, const char *name), void *u);
+// L10: PRAGMA data_version (changes when ANOTHER connection commits). -1 error.
+int64_t sp_state_data_version(SpState *s);
+
 // ── reads ─────────────────────────────────────────────────────────────────────
 // One key's held op blob (PUT or DEL). 1 found (malloc'd *blob) · 0 absent.
 int     sp_state_get(SpState *s, const char *name, const uint8_t *key, int key_len,
