@@ -1,3 +1,6 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1   /* mkstemp under -std=c11 when CFLAGS is overridden */
+#endif
 // net_test.c — self-test battery for dogenet-mesh.
 //
 // Proves the shared substrate end-to-end with REAL data: the dev key
@@ -12,7 +15,7 @@
 #include "dogenet/view.h"
 
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdlib.h>     /* mkstemp */
 #include <string.h>
 #include <unistd.h>
 
