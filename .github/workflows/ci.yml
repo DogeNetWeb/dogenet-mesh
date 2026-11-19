@@ -1,0 +1,56 @@
+# CI for DogeNetWeb/dogenet-mesh — build + unit/regression tests on x86_64 and arm64.
+# Free GitHub-hosted runners (public repo). No secrets, no deploy, no network
+# beyond cloning sibling public repos; tests bind loopback only.
+#
+# Skipped on purpose (documented, not hidden):
+#   - none. Builds against sibling namespace-indexer (secp256k1) and
+#     namespace-protocol checkouts, as the Makefile expects (../).
+name: ci
+on:
+  push:
+    branches: [main, 'ci/**', 'keeper/**', 'fix/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: deps
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libsqlite3-dev cmake
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: dogenet-mesh
+          submodules: false
+          persist-credentials: false
+      - name: sibling repos (same branch if present, else main)
+        env:
+          BR: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -eu
+          cd "$GITHUB_WORKSPACE"
+          for r in namespace-indexer namespace-protocol; do
+            u="https://github.com/DogeNetWeb/${r}.git"
+            b=main; git ls-remote --exit-code --heads "$u" "$BR" >/dev/null 2>&1 && b="$BR"
+            echo "$r @ $b"
+            git clone -q --depth 1 --branch "$b" --recurse-submodules --shallow-submodules "$u" "$r"
+            git -C "$r" log -1 --format='  %h %s'
+          done
+      - name: build
+        working-directory: dogenet-mesh
+        env:
+          CFLAGS: -std=c11 -D_DEFAULT_SOURCE -O2 -Wall -Wextra -Wshadow
+        run: make -j"$(nproc)"
+      - name: test (make check)
+        working-directory: dogenet-mesh
+        timeout-minutes: 15
+        run: make check
