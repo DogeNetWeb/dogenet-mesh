@@ -126,7 +126,7 @@ int main(void) {
     for (uint32_t d = 0; d <= 20; d++) {
         for (int mode = 0; mode < 2; mode++) {
             char p[64]; snprintf(p, sizeof p, "%s", tmpstore(mode ? "race_new" : "race_old"));
-            SpState *st = sp_state_open(p);
+            SpState *st = sp_state_open(p); if (!st) { printf("  FAIL cannot open %s\n", p); return 1; }
             Chain ch = { {0}, 1, E - 1, 1000 }; memcpy(ch.owner, A.h160, 20);
             SpChainOracle o = mode ? a81(&ch, 1) : legacy(&ch);
             int r0 = emit(st, &o, SP_OP_PUT, "www", "alice", E - 1 - SP_STATE_REORG, &A, err);
@@ -148,7 +148,7 @@ int main(void) {
     // ── 2. CLEAR as the new owner's first op ─────────────────────────────────
     printf("-- 2. CLEAR as the new owner's first op (same tip as the publisher) --\n");
     for (int mode = 0; mode < 2; mode++) {
-        const char *p = tmpstore("clear"); SpState *st = sp_state_open(p);
+        const char *p = tmpstore("clear"); SpState *st = sp_state_open(p); if (!st) { printf("  FAIL cannot open %s\n", p); return 1; }
         Chain ch = { {0}, 1, E - 1, 1000 }; memcpy(ch.owner, A.h160, 20);
         SpChainOracle o = mode ? a81(&ch, 1) : legacy(&ch);
         emit(st, &o, SP_OP_PUT, "www", "alice", E - 7, &A, err);
@@ -187,9 +187,12 @@ int main(void) {
     {
         int runs = 40, same = 0, ops_total = 0, rej_total = 0;
         for (int run = 0; run < runs; run++) {
-            const char *pa = "/tmp/a81_test_diff_old.db", *pb = "/tmp/a81_test_diff_new.db";
+            char pa[64], pb[64];                       // per-process paths: parallel runs must not share a file
+            snprintf(pa, sizeof pa, "/tmp/a81_test_%d_diff_old.db", (int)getpid());
+            snprintf(pb, sizeof pb, "/tmp/a81_test_%d_diff_new.db", (int)getpid());
             unlink(pa); unlink(pb);
             SpState *sa = sp_state_open(pa), *sb = sp_state_open(pb);
+            if (!sa || !sb) { printf("  FAIL cannot open differential stores\n"); return 1; }
             Chain ca = { {0}, 1, 1000, 1000 }, cb;
             memcpy(ca.owner, A.h160, 20); cb = ca;
             SpChainOracle oa = legacy(&ca), ob = a81(&cb, 1000000);     // activation above every epoch
@@ -232,7 +235,7 @@ int main(void) {
     // ── 5. no new opening for the previous owner ─────────────────────────────
     printf("-- 5. attacks on the new floor --\n");
     {
-        const char *p = tmpstore("atk"); SpState *st = sp_state_open(p);
+        const char *p = tmpstore("atk"); SpState *st = sp_state_open(p); if (!st) { printf("  FAIL cannot open %s\n", p); return 1; }
         Chain ch = { {0}, 1, E - 1, 1000 }; memcpy(ch.owner, A.h160, 20);
         SpChainOracle o = a81(&ch, 1);
         uint8_t cert[256];
@@ -271,7 +274,7 @@ int main(void) {
     {
         int ok_both = 1;
         for (int mode = 0; mode < 2; mode++) {
-            const char *p = tmpstore("aba"); SpState *st = sp_state_open(p);
+            const char *p = tmpstore("aba"); SpState *st = sp_state_open(p); if (!st) { printf("  FAIL cannot open %s\n", p); return 1; }
             Chain ch = { {0}, 1, E - 1, 1000 }; memcpy(ch.owner, A.h160, 20);
             SpChainOracle o = mode ? a81(&ch, 1) : legacy(&ch);
             uint8_t old1[SP_STATE_OP_MAX]; int n1 = build(SP_OP_PUT, "www", "alice-epoch1", E - 7, &A, SP_CERT_NONE, NULL, 0, old1);
