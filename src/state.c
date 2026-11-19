@@ -416,6 +416,18 @@ static int fail(char *err, int errlen, const char *m) {
     return 0;
 }
 
+uint32_t sp_state_epoch_floor(const SpChainOracle *o, const char *name) {
+    uint32_t tip = o->tip(o->u);
+    uint32_t legacy = tip > SP_STATE_REORG ? tip - SP_STATE_REORG : 0;
+    if (!o->epoch_start || o->epoch_floor_from == 0) return legacy;       // pre-A8-1 host
+    int64_t e = o->epoch_start(o->u, name);
+    // unknown epoch, a transfer below activation, or an epoch row the oracle's
+    // own tip has not reached (inconsistent view): keep the legacy rule exactly.
+    if (e < 0 || e < (int64_t)o->epoch_floor_from || e > (int64_t)tip) return legacy;
+    uint32_t a81 = e > SP_STATE_REORG + 1 ? (uint32_t)e - SP_STATE_REORG - 1 : 0;
+    return a81 < legacy ? a81 : legacy;      // never ABOVE the legacy floor
+}
+
 int sp_state_admit(SpState *s, const SpChainOracle *o,
                    int64_t budget, uint64_t scope,
                    const uint8_t *e, int len, char *err, int errlen) {
@@ -508,15 +520,17 @@ int sp_state_admit(SpState *s, const SpChainOracle *o,
     #define commit_fail(m) do { fail(err, errlen, m); if (!tx_commit(s)) dberr(); if (wrote) notify_change(s, name); return 0; } while (0)
 
     // epoch pin: owner changed ⇒ held rows are a prior epoch. Wipe, and raise
-    // the floor to tip−REORG so the prior epoch cannot replay (fresh ops anchor
-    // at tip−REORG, so the new owner is never blocked by this).
+    // the floor so the prior epoch cannot replay. Legacy: tip−REORG of THIS
+    // node — which rejects a new owner's first ops for good if they arrive a
+    // block or more after the publisher signed them (A8-1). From the host's
+    // activation height the floor sits at the epoch's start on chain instead
+    // (sp_state_epoch_floor).
     NameMeta m;
     if (!meta_get(s, p.name, p.name_len, &m)) dberr();
     if (m.present && memcmp(m.owner, owner, 20) != 0) {
         wrote = 1;
         if (!rows_wipe(s, p.name, p.name_len)) dberr();
-        uint32_t tip = o->tip(o->u);
-        m.floor = tip > SP_STATE_REORG ? tip - SP_STATE_REORG : 0;
+        m.floor = sp_state_epoch_floor(o, name);
         m.sum = 0;
         memcpy(m.owner, owner, 20);
         if (!meta_put(s, p.name, p.name_len, &m, NULL, NULL, 0)) dberr();

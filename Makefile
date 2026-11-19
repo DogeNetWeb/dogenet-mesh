@@ -46,7 +46,7 @@ OBJ     := $(B)/wire.o $(B)/view.o $(B)/crypto.o $(B)/state.o
 # borrowed primitives, compiled into the same archive so consumers link one .a
 PRIM    := $(B)/sha256.o $(B)/ripemd160.o $(B)/secp_shim.o
 
-all: $(LIB) net_test state_test
+all: $(LIB) net_test state_test a81_test
 
 $(LIB): $(OBJ) $(PRIM)
 	$(AR) rcs $@ $^
@@ -55,6 +55,9 @@ net_test: $(B)/net_test.o $(LIB) $(SECPLIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECPLIB) $(SQLITE_LIBS)
 
 state_test: $(B)/state_test.o $(LIB) $(SECPLIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECPLIB) $(SQLITE_LIBS)
+
+a81_test: $(B)/a81_test.o $(LIB) $(SECPLIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB) $(SECPLIB) $(SQLITE_LIBS)
 
 $(B):
@@ -67,6 +70,7 @@ $(B)/crypto.o: src/crypto.c | $(B); $(CC) $(CFLAGS) $(INC) $(INC_SM) -c -o $@ $<
 $(B)/state.o:  src/state.c  | $(B); $(CC) $(CFLAGS) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
 $(B)/net_test.o: test/net_test.c | $(B); $(CC) $(CFLAGS) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
 $(B)/state_test.o: test/state_test.c | $(B); $(CC) $(CFLAGS) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
+$(B)/a81_test.o: test/a81_test.c | $(B); $(CC) $(CFLAGS) $(INC) $(SQLITE_CFLAGS) -c -o $@ $<
 
 # borrowed primitives
 $(B)/sha256.o:    $(SMDIR)/sha256.c    | $(B); $(CC) $(CFLAGS) $(INC_SM) -c -o $@ $<
@@ -83,9 +87,10 @@ $(SECPLIB):
 	      -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=OFF -DSECP256K1_ENABLE_MODULE_MUSIG=OFF \
 	      -DSECP256K1_ENABLE_MODULE_ELLSWIFT=OFF >/dev/null && cmake --build $(IDX)/build/secp -j >/dev/null
 
-check: net_test state_test crypto_test wire_test view_test
+check: net_test state_test a81_test crypto_test wire_test view_test
 	./net_test
 	./state_test
+	./a81_test
 	@rc=0; for t in crypto_test wire_test view_test; do \
 	   echo "== ./$$t =="; ./$$t || rc=1; done; \
 	 if [ $$rc -ne 0 ]; then \
@@ -93,7 +98,7 @@ check: net_test state_test crypto_test wire_test view_test
 	 fi; echo "make check: every suite passed"
 
 clean:
-	rm -rf $(B) $(LIB) net_test state_test
+	rm -rf $(B) $(LIB) net_test state_test a81_test
 	rm -f crypto_test wire_test view_test jitter_test wire_test_ubsan
 	rm -rf *.dSYM
 

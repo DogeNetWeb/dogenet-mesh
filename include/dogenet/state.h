@@ -26,6 +26,10 @@
 // floor is bumped to (tip − SP_STATE_REORG) so a returning owner's year-old
 // ops cannot resurrect (an A→B→A flip inside the reorg window is the one case
 // this misses; a returning owner should publish `clear` first regardless).
+// A8-1 (from the host's activation height, see SpChainOracle.epoch_start): the
+// bump is anchored to the epoch's START height E on chain instead of the
+// receiver's tip — floor = E − SP_STATE_REORG − 1 — so a new owner's first ops
+// that reach a node late are no longer rejected "anchor below floor".
 //
 // The on-chain escape hatch composes: a record op settled in a block IS an op
 // whose anchor is its inclusion height, authenticated by the spend instead of
@@ -133,12 +137,33 @@ void     sp_state_close(SpState *s);
 //               ahead-of-tip forgery and wrong-branch anchors, both of which
 //               are above any horizon a live host keeps)
 //   tip       : best known height (epoch floor placement)
+//   epoch_start, epoch_floor_from (A8-1, both optional — a positional
+//               `{ u, owner_now, header_at, tip }` initializer leaves them
+//               NULL / 0, which is exactly the pre-A8-1 rule):
+//               epoch_start(u, name) = the height of the block that started
+//               `name`'s CURRENT ownership epoch (the transfer, trade, sale or
+//               claim that made owner_now's answer the owner), -1 if unknown.
+//               epoch_floor_from = the A8-1 activation height. When a held
+//               name changes owner and epoch_start E is known with
+//               epoch_floor_from <= E <= tip, the new epoch's floor is
+//               min(tip, E) - SP_STATE_REORG - 1 instead of tip - SP_STATE_REORG
+//               (see sp_state_admit). 0 = never (legacy rule everywhere).
 typedef struct {
     void    *u;
     int     (*owner_now)(void *u, const char *name, uint8_t owner[20]);
     int     (*header_at)(void *u, uint32_t height, uint8_t out[32]);
     uint32_t(*tip)(void *u);
+    int64_t (*epoch_start)(void *u, const char *name);
+    uint32_t  epoch_floor_from;
 } SpChainOracle;
+
+// A8-1: the floor an epoch pin sets for `name` when its held rows belong to a
+// previous owner. Legacy (and every transfer below epoch_floor_from):
+// tip - SP_STATE_REORG, the RECEIVER's tip. From activation: anchored to the
+// chain's own epoch start E (the same on every node), E - SP_STATE_REORG - 1,
+// so the new owner's first ops — anchored at the PUBLISHER's tip - REORG >=
+// E - REORG — are never below it however late they arrive. Exposed for tests.
+uint32_t sp_state_epoch_floor(const SpChainOracle *o, const char *name);
 
 // Admit one signed op against the oracle + `budget` bytes per name (sum of
 // held op blobs). `scope` is the §2.2 scope bit(s) a delegated signer must
